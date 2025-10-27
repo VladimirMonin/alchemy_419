@@ -70,6 +70,8 @@ def product_create(
             )
             session.add(new_product)
             session.commit()
+            # Отсоединяем объект от сессии, чтобы избежать нежелательных побочных эффектов вроде повторных запросов
+            session.expunge(new_product)
             logger.info(
                 f"✅ Создан новый продукт ID={new_product.id}: {new_product.name}"
             )
@@ -78,3 +80,60 @@ def product_create(
             session.rollback()
             logger.error(f"❌ Ошибка создания продукта: {e}", exc_info=True)
             raise
+
+
+def product_delete_by_id(session_local: sessionmaker, product_id: int) -> int:
+    """
+    Удаляет продукт по ID.
+    :param session_local: Фабрика сессий SQLAlchemy.
+    :param product_id: ID продукта для удаления.
+    :return: int: Id удаленного продукта
+    """
+    # Открываем сессию
+    with session_local() as session:
+        # Пытаемся найти продукт по ID
+        product = session.get(Product, product_id)
+        if not product:
+            logger.warning(f"❌ Продукт с ID={product_id} не найден для удаления.")
+            return -1
+
+        session.delete(product)
+        session.commit()
+        logger.info(f"✅ Продукт с ID={product_id} успешно удален.")
+        return product_id
+
+
+def product_update_by_id(
+    session_local: sessionmaker, product_id: int, **kwargs
+) -> Product | None:
+    """
+    Обновляет продукт по ID с переданными полями.
+    :param product_id: ID продукта для обновления.
+    :param kwargs: Поля для обновления с их новыми значениями.
+    :return: Обновленный объект продукта или None, если продукт не найден.
+
+    """
+    with session_local() as session:
+        product = session.get(Product, product_id)
+        # Проверка существования продукта
+        if not product:
+            logger.warning(f"❌ Продукт с ID={product_id} не найден для обновления.")
+            return None
+
+        # Обновление полей продукта
+        try:
+            for key, value in kwargs.items():
+                if hasattr(product, key):
+                    setattr(product, key, value)
+            session.commit()
+
+        except Exception as e:
+            session.rollback()
+            logger.error(
+                f"❌ Ошибка обновления продукта ID={product_id}: {e}", exc_info=True
+            )
+            raise
+
+        session.expunge(product)
+        logger.info(f"✅ Продукт с ID={product_id} успешно обновлен.")
+        return product

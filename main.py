@@ -7,10 +7,18 @@ from utils.logger import setup_logging
 import logging
 
 # Настройка логирования (вызываем ОДИН РАЗ при старте)
-setup_logging()
+setup_logging(
+    level=logging.INFO, log_file="./logs/app.log", sqlalchemy_log_file="./logs/sqlalchemy.log"
+)
 
 # Теперь можем импортировать остальные модули
-from utils.db_operations import get_engine, get_session_factory, product_create
+from utils.db_operations import (
+    get_engine,
+    get_session_factory,
+    product_create,
+    product_update_by_id,
+    product_delete_by_id,
+)
 from utils.db_initial import create_tables
 
 # Логгер для main
@@ -46,6 +54,41 @@ def main():
         raise
 
     logger.info("Приложение завершено успешно")
+
+    # Обновляем тестовый продукт (обновим цены)
+    try:
+        updated_product = product_update_by_id(
+            session_local=SessionLocal,
+            product_id=product.id,
+            price_shmeckles=1800.49,
+            price_flurbos=190.49,
+        )
+        if updated_product:
+            logger.info(f"Главная функция: обновлен продукт {updated_product}")
+        else:
+            logger.error("Главная функция: не удалось обновить продукт")
+
+    except Exception as e:
+        logger.critical(
+            f"Критическая ошибка при обновлении продукта в main: {e}", exc_info=True
+        )
+        raise
+
+    # Удаляем тестовый продукт
+    try:
+        deleted_id = product_delete_by_id(
+            session_local=SessionLocal,
+            product_id=product.id,
+        )
+        if deleted_id != -1:
+            logger.info(f"Главная функция: удален продукт с ID={deleted_id}")
+        else:
+            logger.error("Главная функция: не удалось удалить продукт")
+    except Exception as e:
+        logger.critical(
+            f"Критическая ошибка при удалении продукта в main: {e}", exc_info=True
+        )
+        raise
 
 
 if __name__ == "__main__":
