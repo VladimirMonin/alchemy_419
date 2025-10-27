@@ -1,21 +1,12 @@
 # utils/db_operations.py
 # Модуль для CRUD операций с базой данных используя SQLAlchemy
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 from models.models import Product
-
+from settings import DB_NAME
 import logging
 
-DB_NAME = "products.db"
-
-# Настройка логгера запись в файл + терминал
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.FileHandler("db_operations.log"), logging.StreamHandler()],
-    encoding="utf-8",
-)
-
+# Создаём именованный логгер для этого модуля
 logger = logging.getLogger(__name__)
 
 
@@ -58,9 +49,9 @@ def product_create(
     image_url: str | None,
     price_shmeckles: float,
     price_flurbos: float,
-):
+) -> Product:
     """Создает новый продукт в базе данных.
-    :param session: Сессия базы данных SQLAlchemy.
+    :param session_local: Фабрика сессий SQLAlchemy.
     :param name: Название продукта.
     :param description: Описание продукта.
     :param image_url: URL изображения продукта.
@@ -68,18 +59,22 @@ def product_create(
     :param price_flurbos: Цена продукта во флубрах.
     :return: Созданный объект продукта.
     """
-    # Создаем сессию
     with session_local() as session:
-        new_product = Product(
-            name=name,
-            description=description,
-            image_url=image_url,
-            price_shmeckles=price_shmeckles,
-            price_flurbos=price_flurbos,
-        )
-        session.add(new_product)
-        session.commit()
-        # Обновляем объект, чтобы получить сгенерированные значения (например, id)
-        session.refresh(new_product)
-        logger.info(f"Создан новый продукт: {new_product}")
-        return new_product
+        try:
+            new_product = Product(
+                name=name,
+                description=description,
+                image_url=image_url,
+                price_shmeckles=price_shmeckles,
+                price_flurbos=price_flurbos,
+            )
+            session.add(new_product)
+            session.commit()
+            logger.info(
+                f"✅ Создан новый продукт ID={new_product.id}: {new_product.name}"
+            )
+            return new_product
+        except Exception as e:
+            session.rollback()
+            logger.error(f"❌ Ошибка создания продукта: {e}", exc_info=True)
+            raise

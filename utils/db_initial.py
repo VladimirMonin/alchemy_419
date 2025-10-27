@@ -1,23 +1,26 @@
 # utils/db_initial.py
-from sqlalchemy import create_engine
+"""
+Модуль инициализации базы данных
+"""
 from models.base import Base
-from models.models import Product
-import os
-from settings import DB_NAME
+from utils.db_operations import get_engine
+import logging
+
+# Создаём именованный логгер для этого модуля
+logger = logging.getLogger(__name__)
 
 
-def init_db():
-    """
-    Функция инициализации базы данных.
-    """
-    if not os.path.exists(DB_NAME):
+def create_tables():
+    """Создаёт все таблицы в БД на основе моделей."""
+    logger.info("Начало создания таблиц...")
+    engine = get_engine()
+    Base.metadata.create_all(bind=engine)
+    logger.info("✅ Таблицы успешно созданы!")
 
-        # Создаем движок базы данных
-        engine = create_engine(f"sqlite:///{DB_NAME}", echo=True)
 
-        # Создаем все таблицы, определенные в моделях
-        Base.metadata.create_all(engine)
-        print("База данных инициализирована.")
-
-    else:
-        print("База данных уже существует.")
+def drop_tables():
+    """Удаляет все таблицы из БД. ОСТОРОЖНО: удалит все данные!"""
+    logger.warning("⚠️ Запрос на удаление ВСЕХ таблиц!")
+    engine = get_engine()
+    Base.metadata.drop_all(bind=engine)
+    logger.info("🗑️ Таблицы удалены!")
