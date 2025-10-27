@@ -137,3 +137,37 @@ def product_update_by_id(
         session.expunge(product)
         logger.info(f"✅ Продукт с ID={product_id} успешно обновлен.")
         return product
+
+
+def product_get_by_id(session_local: sessionmaker, product_id: int) -> Product | None:
+    """
+    Получает продукт по ID.
+    :param session_local: Фабрика сессий SQLAlchemy.
+    :param product_id: ID продукта для получения.
+    :return: Объект продукта или None, если продукт не найден.
+    """
+    with session_local() as session:
+        product = session.get(Product, product_id)
+        if not product:
+            logger.warning(f"❌ Продукт с ID={product_id} не найден.")
+            return None
+
+        session.expunge(product)
+        logger.info(f"✅ Продукт с ID={product_id} успешно получен.")
+        return product
+
+
+def product_get_all(session_local: sessionmaker) -> list[Product]:
+    """
+    Получает все продукты из базы данных.
+    :param session_local: Фабрика сессий SQLAlchemy.
+    :return: Список всех объектов продуктов.
+    """
+    with session_local() as session:
+        # session.query - создает запрос к базе данных для получения всех продуктов
+        # Поддерживает различные методы фильтрации, сортировки и агрегации данных
+        products = session.query(Product).all()
+        for product in products:
+            session.expunge(product)
+        logger.info(f"✅ Получено {len(products)} продуктов из базы данных.")
+        return products

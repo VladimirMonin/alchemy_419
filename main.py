@@ -8,7 +8,9 @@ import logging
 
 # Настройка логирования (вызываем ОДИН РАЗ при старте)
 setup_logging(
-    level=logging.INFO, log_file="./logs/app.log", sqlalchemy_log_file="./logs/sqlalchemy.log"
+    level=logging.INFO,
+    log_file="./logs/app.log",
+    sqlalchemy_log_file="./logs/sqlalchemy.log",
 )
 
 # Теперь можем импортировать остальные модули
@@ -18,6 +20,8 @@ from utils.db_operations import (
     product_create,
     product_update_by_id,
     product_delete_by_id,
+    product_get_by_id,
+    product_get_all,
 )
 from utils.db_initial import create_tables
 
@@ -71,6 +75,34 @@ def main():
     except Exception as e:
         logger.critical(
             f"Критическая ошибка при обновлении продукта в main: {e}", exc_info=True
+        )
+        raise
+
+    # Получаем тестовый продукт по ID
+    try:
+        fetched_product = product_get_by_id(
+            session_local=SessionLocal,
+            product_id=product.id,
+        )
+        if fetched_product:
+            logger.info(f"Главная функция: получен продукт по ID {fetched_product}")
+        else:
+            logger.error("Главная функция: не удалось получить продукт по ID")
+    except Exception as e:
+        logger.critical(
+            f"Критическая ошибка при получении продукта по ID в main: {e}",
+            exc_info=True,
+        )
+        raise
+
+    # Получаем все продукты
+    try:
+        all_products = product_get_all(session_local=SessionLocal)
+        logger.info(f"Главная функция: получены все продукты: {all_products}")
+    except Exception as e:
+        logger.critical(
+            f"Критическая ошибка при получении всех продуктов в main: {e}",
+            exc_info=True,
         )
         raise
 
