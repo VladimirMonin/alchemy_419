@@ -1,6 +1,6 @@
 # utils/db_operations.py
 # Модуль для CRUD операций с базой данных используя SQLAlchemy
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from models.models import Product
 from settings import DB_NAME
@@ -164,10 +164,33 @@ def product_get_all(session_local: sessionmaker) -> list[Product]:
     :return: Список всех объектов продуктов.
     """
     with session_local() as session:
-        # session.query - создает запрос к базе данных для получения всех продуктов
-        # Поддерживает различные методы фильтрации, сортировки и агрегации данных
-        products = session.query(Product).all()
+        # Создаем statement (инструкцию) для запроса всех продуктов
+        stmt = select(Product)
+        # Выполняем запрос и получаем все объекты Product
+        products = session.scalars(stmt).all()
         for product in products:
             session.expunge(product)
         logger.info(f"✅ Получено {len(products)} продуктов из базы данных.")
+        return products
+
+
+def product_like_name(
+    session_local: sessionmaker, name_substring: str
+) -> list[Product]:
+    """
+    Получает продукты, название которых содержит заданную подстроку.
+    :param session_local: Фабрика сессий SQLAlchemy.
+    :param name_substring: Подстрока для поиска в названии продукта.
+    :return: Список объектов продуктов, соответствующих критерию поиска.
+    """
+    with session_local() as session:
+        # Создаем statement (инструкцию) для запроса продуктов по подстроке в названии
+        stmt = select(Product).where(Product.name.ilike(f"%{name_substring}%"))
+        # Выполняем запрос и получаем все объекты Product
+        products = session.scalars(stmt).all()
+        for product in products:
+            session.expunge(product)
+        logger.info(
+            f"✅ Найдено {len(products)} продуктов, содержащих '{name_substring}' в названии."
+        )
         return products

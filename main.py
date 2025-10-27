@@ -22,6 +22,7 @@ from utils.db_operations import (
     product_delete_by_id,
     product_get_by_id,
     product_get_all,
+    product_like_name,
 )
 from utils.db_initial import create_tables
 
@@ -102,6 +103,22 @@ def main():
     except Exception as e:
         logger.critical(
             f"Критическая ошибка при получении всех продуктов в main: {e}",
+            exc_info=True,
+        )
+        raise
+
+    # Ищем продукты по подстроке в названии
+    try:
+        matching_products = product_like_name(
+            session_local=SessionLocal,
+            name_substring="пушка",
+        )
+        logger.info(
+            f"Главная функция: продукты, содержащие 'пушка' в названии: {matching_products}"
+        )
+    except Exception as e:
+        logger.critical(
+            f"Критическая ошибка при поиске продуктов по названию в main: {e}",
             exc_info=True,
         )
         raise
