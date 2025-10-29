@@ -2,18 +2,20 @@
 # Модуль для CRUD операций с базой данных используя SQLAlchemy
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
-from models.models import Product
-from settings import DB_NAME
+from models.models import Product as ProductORM
+from config import settings
+from schemas.schemas import ProductCreate, Product
 import logging
 
 # Создаём именованный логгер для этого модуля
 logger = logging.getLogger(__name__)
 
 
-def get_engine(db_name=DB_NAME):
+def get_engine(db_name=None):
     """Создает и возвращает движок базы данных."""
-    engine = create_engine(f"sqlite:///{db_name}", echo=True)
-    logger.info(f"Создан движок базы данных для {db_name}")
+    db = db_name or settings.db_name
+    engine = create_engine(f"sqlite:///{db}", echo=settings.db_echo)
+    logger.info(f"Создан движок базы данных для {db}")
     return engine
 
 
@@ -44,38 +46,29 @@ def get_session_factory(engine):
 
 def product_create(
     session_local: sessionmaker,
-    name: str,
-    description: str | None,
-    image_url: str | None,
-    price_shmeckles: float,
-    price_flurbos: float,
+    product_data: ProductCreate,
 ) -> Product:
-    """Создает новый продукт в базе данных.
+    """
+    Создает новый продукт используя Pydantic схему.
+
     :param session_local: Фабрика сессий SQLAlchemy.
-    :param name: Название продукта.
-    :param description: Описание продукта.
-    :param image_url: URL изображения продукта.
-    :param price_shmeckles: Цена продукта в шмекелях.
-    :param price_flurbos: Цена продукта во флубрах.
-    :return: Созданный объект продукта.
+    :param product_data: Данные продукта (ProductCreate)
+    :return: ProductRead с данными созданного продукта
     """
     with session_local() as session:
         try:
-            new_product = Product(
-                name=name,
-                description=description,
-                image_url=image_url,
-                price_shmeckles=price_shmeckles,
-                price_flurbos=price_flurbos,
-            )
+            # Создаем ORM объект из Pydantic модели
+            new_product = ProductORM(**product_data.model_dump())
             session.add(new_product)
             session.commit()
-            # Отсоединяем объект от сессии, чтобы избежать нежелательных побочных эффектов вроде повторных запросов
-            session.expunge(new_product)
-            logger.info(
-                f"✅ Создан новый продукт ID={new_product.id}: {new_product.name}"
-            )
-            return new_product
+            session.refresh(new_product)
+
+            # Преобразуем ORM в Pydantic
+            result = Product.model_validate(new_product)
+
+            logger.info(f"✅ Создан новый продукт ID={result.id}: {result.name}")
+            return result
+
         except Exception as e:
             session.rollback()
             logger.error(f"❌ Ошибка создания продукта: {e}", exc_info=True)
@@ -92,7 +85,7 @@ def product_delete_by_id(session_local: sessionmaker, product_id: int) -> int:
     # Открываем сессию
     with session_local() as session:
         # Пытаемся найти продукт по ID
-        product = session.get(Product, product_id)
+        product = session.get(ProductORM, product_id)
         if not product:
             logger.warning(f"❌ Продукт с ID={product_id} не найден для удаления.")
             return -1
@@ -103,94 +96,98 @@ def product_delete_by_id(session_local: sessionmaker, product_id: int) -> int:
         return product_id
 
 
-def product_update_by_id(
-    session_local: sessionmaker, product_id: int, **kwargs
-) -> Product | None:
+def product_update(session_local: sessionmaker, product_data: Product) -> Product:
     """
-    Обновляет продукт по ID с переданными полями.
-    :param product_id: ID продукта для обновления.
-    :param kwargs: Поля для обновления с их новыми значениями.
-    :return: Обновленный объект продукта или None, если продукт не найден.
+    Обновляет продукт используя полную Pydantic модель Product.
 
+    :param session_local: Фабрика сессий SQLAlchemy.
+    :param product_data: Полные данные продукта (Product) включая ID
+    :return: Product с обновленными данными
     """
     with session_local() as session:
-        product = session.get(Product, product_id)
-        # Проверка существования продукта
-        if not product:
-            logger.warning(f"❌ Продукт с ID={product_id} не найден для обновления.")
-            return None
+        product = session.get(ProductORM, product_data.id)
 
-        # Обновление полей продукта
+        if not product:
+            logger.warning(
+                f"❌ Продукт с ID={product_data.id} не найден для обновления."
+            )
+            raise ValueError(f"Продукт с ID={product_data.id} не найден")
+
         try:
-            for key, value in kwargs.items():
-                if hasattr(product, key):
-                    setattr(product, key, value)
+            # Обновляем все поля из Pydantic модели
+            update_data = product_data.model_dump()
+
+            for key, value in update_data.items():
+                setattr(product, key, value)
+
             session.commit()
+            session.refresh(product)
+
+            result = Product.model_validate(product)
+            logger.info(f"✅ Продукт с ID={product_data.id} успешно обновлен.")
+            return result
 
         except Exception as e:
             session.rollback()
             logger.error(
-                f"❌ Ошибка обновления продукта ID={product_id}: {e}", exc_info=True
+                f"❌ Ошибка обновления продукта ID={product_data.id}: {e}",
+                exc_info=True,
             )
             raise
-
-        session.expunge(product)
-        logger.info(f"✅ Продукт с ID={product_id} успешно обновлен.")
-        return product
 
 
 def product_get_by_id(session_local: sessionmaker, product_id: int) -> Product | None:
     """
-    Получает продукт по ID.
+    Получает продукт по ID, возвращает ProductRead.
     :param session_local: Фабрика сессий SQLAlchemy.
     :param product_id: ID продукта для получения.
-    :return: Объект продукта или None, если продукт не найден.
+    :return: ProductRead или None, если продукт не найден.
     """
     with session_local() as session:
-        product = session.get(Product, product_id)
+        product = session.get(ProductORM, product_id)
         if not product:
             logger.warning(f"❌ Продукт с ID={product_id} не найден.")
             return None
 
-        session.expunge(product)
+        result = Product.model_validate(product)
         logger.info(f"✅ Продукт с ID={product_id} успешно получен.")
-        return product
+        return result
 
 
 def product_get_all(session_local: sessionmaker) -> list[Product]:
     """
-    Получает все продукты из базы данных.
+    Получает все продукты, возвращает список ProductRead.
     :param session_local: Фабрика сессий SQLAlchemy.
-    :return: Список всех объектов продуктов.
+    :return: Список всех ProductRead.
     """
     with session_local() as session:
         # Создаем statement (инструкцию) для запроса всех продуктов
-        stmt = select(Product)
+        stmt = select(ProductORM)
         # Выполняем запрос и получаем все объекты Product
         products = session.scalars(stmt).all()
-        for product in products:
-            session.expunge(product)
-        logger.info(f"✅ Получено {len(products)} продуктов из базы данных.")
-        return products
+
+        result = [Product.model_validate(p) for p in products]
+        logger.info(f"✅ Получено {len(result)} продуктов из базы данных.")
+        return result
 
 
 def product_like_name(
     session_local: sessionmaker, name_substring: str
 ) -> list[Product]:
     """
-    Получает продукты, название которых содержит заданную подстроку.
+    Получает продукты по подстроке в названии.
     :param session_local: Фабрика сессий SQLAlchemy.
     :param name_substring: Подстрока для поиска в названии продукта.
-    :return: Список объектов продуктов, соответствующих критерию поиска.
+    :return: Список ProductRead, соответствующих критерию поиска.
     """
     with session_local() as session:
         # Создаем statement (инструкцию) для запроса продуктов по подстроке в названии
-        stmt = select(Product).where(Product.name.ilike(f"%{name_substring}%"))
+        stmt = select(ProductORM).where(ProductORM.name.ilike(f"%{name_substring}%"))
         # Выполняем запрос и получаем все объекты Product
         products = session.scalars(stmt).all()
-        for product in products:
-            session.expunge(product)
+
+        result = [Product.model_validate(p) for p in products]
         logger.info(
-            f"✅ Найдено {len(products)} продуктов, содержащих '{name_substring}' в названии."
+            f"✅ Найдено {len(result)} продуктов, содержащих '{name_substring}' в названии."
         )
-        return products
+        return result

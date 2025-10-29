@@ -18,13 +18,14 @@ from utils.db_operations import (
     get_engine,
     get_session_factory,
     product_create,
-    product_update_by_id,
+    product_update,
     product_delete_by_id,
     product_get_by_id,
     product_get_all,
     product_like_name,
 )
 from utils.db_initial import create_tables
+from schemas.schemas import ProductCreate, Product
 
 # Логгер для main
 logger = logging.getLogger(__name__)
@@ -42,16 +43,17 @@ def main():
     # Создаём таблицы
     create_tables()
 
-    # Создаём тестовый продукт
+    # Создаём тестовый продукт используя Pydantic схему
     try:
-        product = product_create(
-            session_local=SessionLocal,
+        product_data = ProductCreate(
             name="Портальная пушка Рика. Б/у",
             description="Отличная портальная пушка, бывшая в употреблении. Работает без нареканий. Заряд жидкости 52%",
             image_url="http://rick-morty.com/portal_gun.png",
             price_shmeckles=1900.99,
             price_flurbos=200.99,
         )
+
+        product = product_create(session_local=SessionLocal, product_data=product_data)
         logger.info(f"Главная функция: получен продукт {product}")
 
     except Exception as e:
@@ -62,16 +64,20 @@ def main():
 
     # Обновляем тестовый продукт (обновим цены)
     try:
-        updated_product = product_update_by_id(
-            session_local=SessionLocal,
-            product_id=product.id,
+        # Создаем полную модель Product с обновленными данными
+        update_data = Product(
+            id=product.id,
+            name=product.name,
+            description=product.description,
+            image_url=product.image_url,
             price_shmeckles=1800.49,
             price_flurbos=190.49,
         )
-        if updated_product:
-            logger.info(f"Главная функция: обновлен продукт {updated_product}")
-        else:
-            logger.error("Главная функция: не удалось обновить продукт")
+
+        updated_product = product_update(
+            session_local=SessionLocal, product_data=update_data
+        )
+        logger.info(f"Главная функция: обновлен продукт {updated_product}")
 
     except Exception as e:
         logger.critical(
