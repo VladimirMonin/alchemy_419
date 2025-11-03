@@ -17,15 +17,16 @@ setup_logging(
 from utils.db_operations import (
     get_engine,
     get_session_factory,
-    product_create,
-    product_update,
-    product_delete_by_id,
-    product_get_by_id,
-    product_get_all,
-    product_like_name,
+    category_create,
+    category_get_all,
+    tag_create,
+    tag_get_all,
+    product_create_with_relations,
+    product_get_all_with_relations,
+    product_search_advanced,
 )
 from utils.db_initial import create_tables
-from schemas.schemas import ProductCreate, Product
+from schemas.schemas import ProductCreate, CategoryCreate, TagCreate
 
 # Логгер для main
 logger = logging.getLogger(__name__)
@@ -43,107 +44,125 @@ def main():
     # Создаём таблицы
     create_tables()
 
-    # Создаём тестовый продукт используя Pydantic схему
-    try:
-        product_data = ProductCreate(
-            name="Портальная пушка Рика. Б/у",
-            description="Отличная портальная пушка, бывшая в употреблении. Работает без нареканий. Заряд жидкости 52%",
-            image_url="http://rick-morty.com/portal_gun.png",
-            price_shmeckles=1900.99,
-            price_flurbos=200.99,
-        )
+    # Работаем с БД
+    logger.info("\n" + "=" * 50)
+    logger.info("Создание категорий")
+    logger.info("=" * 50)
 
-        product = product_create(session_local=SessionLocal, product_data=product_data)
-        logger.info(f"Главная функция: получен продукт {product}")
+    # 1. Создаём категории
+    electronics = category_create(SessionLocal, CategoryCreate(name="Электроника"))
+    gadgets = category_create(SessionLocal, CategoryCreate(name="Гаджеты"))
+    food = category_create(SessionLocal, CategoryCreate(name="Еда"))
 
-    except Exception as e:
-        logger.critical(f"Критическая ошибка в main: {e}", exc_info=True)
-        raise
+    logger.info("\n" + "=" * 50)
+    logger.info("Создание тегов")
+    logger.info("=" * 50)
 
-    logger.info("Приложение завершено успешно")
+    # 2. Создаём теги
+    new_tag = tag_create(SessionLocal, TagCreate(name="Новинка"))
+    sale_tag = tag_create(SessionLocal, TagCreate(name="Скидка"))
+    popular_tag = tag_create(SessionLocal, TagCreate(name="Популярное"))
+    premium_tag = tag_create(SessionLocal, TagCreate(name="Премиум"))
 
-    # Обновляем тестовый продукт (обновим цены)
-    try:
-        # Создаем полную модель Product с обновленными данными
-        update_data = Product(
-            id=product.id,
-            name=product.name,
-            description=product.description,
-            image_url=product.image_url,
-            price_shmeckles=1800.49,
-            price_flurbos=190.49,
-        )
+    logger.info("\n" + "=" * 50)
+    logger.info("Создание продуктов со связями")
+    logger.info("=" * 50)
 
-        updated_product = product_update(
-            session_local=SessionLocal, product_data=update_data
-        )
-        logger.info(f"Главная функция: обновлен продукт {updated_product}")
+    # 3. Создаём продукты со связями
+    product1 = product_create_with_relations(
+        SessionLocal,
+        ProductCreate(
+            name="Плюмбус",
+            description="Незаменимая вещь в каждом доме",
+            image_url="https://example.com/plumbus.jpg",
+            price_shmeckles=25.5,
+            price_flurbos=3.2,
+            category_id=electronics.id,
+            tag_ids=[new_tag.id, popular_tag.id],
+        ),
+    )
 
-    except Exception as e:
-        logger.critical(
-            f"Критическая ошибка при обновлении продукта в main: {e}", exc_info=True
-        )
-        raise
+    product2 = product_create_with_relations(
+        SessionLocal,
+        ProductCreate(
+            name="Портальная пушка",
+            description="Открывает порталы между измерениями",
+            price_shmeckles=1000.0,
+            price_flurbos=150.0,
+            category_id=gadgets.id,
+            tag_ids=[new_tag.id, sale_tag.id, premium_tag.id],
+        ),
+    )
 
-    # Получаем тестовый продукт по ID
-    try:
-        fetched_product = product_get_by_id(
-            session_local=SessionLocal,
-            product_id=product.id,
-        )
-        if fetched_product:
-            logger.info(f"Главная функция: получен продукт по ID {fetched_product}")
-        else:
-            logger.error("Главная функция: не удалось получить продукт по ID")
-    except Exception as e:
-        logger.critical(
-            f"Критическая ошибка при получении продукта по ID в main: {e}",
-            exc_info=True,
-        )
-        raise
+    product3 = product_create_with_relations(
+        SessionLocal,
+        ProductCreate(
+            name="Мега-семена",
+            description="Семена из измерения C-137",
+            price_shmeckles=50.0,
+            price_flurbos=7.5,
+            category_id=food.id,
+            tag_ids=[popular_tag.id],
+        ),
+    )
+
+    product4 = product_create_with_relations(
+        SessionLocal,
+        ProductCreate(
+            name="Флиббо-джиббер",
+            description="Устройство для флиббования",
+            price_shmeckles=75.0,
+            price_flurbos=12.0,
+            # Без категории!
+            tag_ids=[premium_tag.id],
+        ),
+    )
+
+    logger.info("\n" + "=" * 50)
+    logger.info("Все категории в БД:")
+    logger.info("=" * 50)
+
+    all_categories = category_get_all(SessionLocal)
+    for cat in all_categories:
+        logger.info(f"  • {cat.name} (ID: {cat.id})")
+
+    logger.info("\n" + "=" * 50)
+    logger.info("Все теги в БД:")
+    logger.info("=" * 50)
+
+    all_tags = tag_get_all(SessionLocal)
+    for tag in all_tags:
+        logger.info(f"  • {tag.name} (ID: {tag.id})")
+
+    logger.info("\n" + "=" * 50)
+    logger.info("Все продукты в БД:")
+    logger.info("=" * 50)
 
     # Получаем все продукты
-    try:
-        all_products = product_get_all(session_local=SessionLocal)
-        logger.info(f"Главная функция: получены все продукты: {all_products}")
-    except Exception as e:
-        logger.critical(
-            f"Критическая ошибка при получении всех продуктов в main: {e}",
-            exc_info=True,
-        )
-        raise
-
-    # Ищем продукты по подстроке в названии
-    try:
-        matching_products = product_like_name(
-            session_local=SessionLocal,
-            name_substring="пушка",
-        )
+    all_products = product_get_all_with_relations(SessionLocal)
+    for product in all_products:
         logger.info(
-            f"Главная функция: продукты, содержащие 'пушка' в названии: {matching_products}"
+            f"\n📦 {product.name} ({product.price_shmeckles} шмеклей)\n"
+            f"   Категория: {product.category.name if product.category else '❌ Без категории'}\n"
+            f"   Теги: {', '.join(tag.name for tag in product.tags) if product.tags else '❌ Без тегов'}"
         )
-    except Exception as e:
-        logger.critical(
-            f"Критическая ошибка при поиске продуктов по названию в main: {e}",
-            exc_info=True,
-        )
-        raise
 
-    # Удаляем тестовый продукт
-    try:
-        deleted_id = product_delete_by_id(
-            session_local=SessionLocal,
-            product_id=product.id,
-        )
-        if deleted_id != -1:
-            logger.info(f"Главная функция: удален продукт с ID={deleted_id}")
-        else:
-            logger.error("Главная функция: не удалось удалить продукт")
-    except Exception as e:
-        logger.critical(
-            f"Критическая ошибка при удалении продукта в main: {e}", exc_info=True
-        )
-        raise
+    logger.info("\n" + "=" * 50)
+    logger.info("Расширенный поиск по слову 'портал':")
+    logger.info("=" * 50)
+
+    # Поиск по названию, категории и тегам
+    search_results = product_search_advanced(SessionLocal, "портал")
+    for product in search_results:
+        logger.info(f"  ✅ Найдено: {product.name}")
+
+    logger.info("\n" + "=" * 50)
+    logger.info("Поиск по слову 'новинка' (тег):")
+    logger.info("=" * 50)
+
+    search_results = product_search_advanced(SessionLocal, "новинка")
+    for product in search_results:
+        logger.info(f"  ✅ Найдено: {product.name}")
 
 
 if __name__ == "__main__":
