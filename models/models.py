@@ -60,16 +60,16 @@ class Product(Base):
     __tablename__ = "products"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    
+
     # Индекс для поиска по LIKE/ILIKE
     name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
-    
+
     # Text для длинных описаний, может быть NULL
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    
+
     # URL может быть пустым
     image_url: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
-    
+
     # Индексы на цены для фильтрации
     price_shmeckles: Mapped[float] = mapped_column(Float, nullable=False, index=True)
     price_flurbos: Mapped[float] = mapped_column(Float, nullable=False, index=True)
