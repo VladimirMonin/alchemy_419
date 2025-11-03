@@ -34,7 +34,7 @@ class Category(Base):
     # Связь один-ко-многим с продуктами
     products: Mapped[List["Product"]] = relationship(
         back_populates="category",
-        lazy="raise",  # Защита от ленивой загрузки в async
+        lazy="raise_on_sql",  # Защита от ленивой загрузки в async
         cascade="save-update, merge",  # Безопасный каскад
     )
 
@@ -51,7 +51,7 @@ class Tag(Base):
     products: Mapped[List["Product"]] = relationship(
         secondary=product_tag_association,
         back_populates="tags",
-        lazy="raise",  # Защита от ленивой загрузки в async
+        lazy="raise_on_sql",  # Защита от ленивой загрузки в async
         cascade="save-update, merge",  # ✅ Правильный каскад для M2M
     )
 
@@ -85,14 +85,14 @@ class Product(Base):
     # Связь многие-к-одному с категорией
     category: Mapped[Optional["Category"]] = relationship(
         back_populates="products",
-        lazy="raise",
+        lazy="raise_on_sql",
     )
 
     # Связь многие-ко-многим с тегами
     tags: Mapped[List["Tag"]] = relationship(
         secondary=product_tag_association,
         back_populates="products",
-        lazy="raise",
+        lazy="raise_on_sql",
         cascade="save-update, merge",  # ✅ Безопасно для M2M
     )
 

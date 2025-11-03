@@ -21,8 +21,8 @@ from utils.db_operations import (
     category_get_all,
     tag_create,
     tag_get_all,
-    product_create_with_relations,
-    product_get_all_with_relations,
+    product_create,
+    product_get_all,
     product_search_advanced,
 )
 from utils.db_initial import create_tables
@@ -69,7 +69,7 @@ def main():
     logger.info("=" * 50)
 
     # 3. Создаём продукты со связями
-    product1 = product_create_with_relations(
+    product1 = product_create(
         SessionLocal,
         ProductCreate(
             name="Плюмбус",
@@ -82,7 +82,7 @@ def main():
         ),
     )
 
-    product2 = product_create_with_relations(
+    product2 = product_create(
         SessionLocal,
         ProductCreate(
             name="Портальная пушка",
@@ -94,7 +94,7 @@ def main():
         ),
     )
 
-    product3 = product_create_with_relations(
+    product3 = product_create(
         SessionLocal,
         ProductCreate(
             name="Мега-семена",
@@ -106,7 +106,7 @@ def main():
         ),
     )
 
-    product4 = product_create_with_relations(
+    product4 = product_create(
         SessionLocal,
         ProductCreate(
             name="Флиббо-джиббер",
@@ -139,7 +139,7 @@ def main():
     logger.info("=" * 50)
 
     # Получаем все продукты
-    all_products = product_get_all_with_relations(SessionLocal)
+    all_products = product_get_all(SessionLocal)
     for product in all_products:
         logger.info(
             f"\n📦 {product.name} ({product.price_shmeckles} шмеклей)\n"

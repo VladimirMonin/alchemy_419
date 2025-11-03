@@ -47,6 +47,13 @@ class ProductCreate(BaseModel):
     tag_ids: List[int] = []  # Список ID тегов
 
 
+class ProductUpdate(ProductCreate):
+    """
+    Обновление продукта в формате PUT (все поля как в создании, но с ID обновленца)
+    """
+    id: int
+
+
 class Product(BaseModel):
     """Продукт из БД со связями"""
     id: int

@@ -1,7 +1,48 @@
 # utils/db_operations.py
-# Модуль для CRUD операций с базой данных используя SQLAlchemy
+"""
+Модуль CRUD операций для работы с базой данных через SQLAlchemy.
+
+Архитектура и принципы:
+-----------------------
+1. **Управление транзакциями**: Используется декоратор @with_transaction для автоматического
+   управления транзакциями (commit при успехе, rollback при ошибках).
+
+2. **Загрузка связей**: Все функции работы с Product используют явную загрузку связей
+   через selectinload() для избежания проблем с lazy="raise_on_sql".
+
+3. **Валидация данных**: Строгая проверка существования связанных сущностей (категории, теги)
+   перед выполнением операций.
+
+4. **Логирование**: Детальное логирование всех операций с эмодзи для удобства отладки:
+   ✅ - успешные операции
+   ❌ - ошибки
+   ⚠️ - предупреждения
+   🔍 - операции поиска
+
+5. **Типизация**: Полная поддержка type hints для IDE и статических анализаторов.
+
+Структура CRUD операций:
+-------------------------
+- **Product**: Create, Read (by id/all), Update, Delete, Search (advanced/like)
+- **Category**: Create, Read (by id/all), Update, Delete
+- **Tag**: Create, Read (by id/all), Update, Delete
+
+Особенности работы со связями:
+-------------------------------
+- **O2M (Product → Category)**: FK связь с ondelete="SET NULL"
+- **M2M (Product ↔ Tag)**: Ассоциативная таблица с ondelete="CASCADE"
+
+Транзакционная безопасность:
+-----------------------------
+Все модифицирующие операции (Create, Update, Delete) используют декоратор @with_transaction,
+который гарантирует:
+- Автоматический commit при успешном выполнении
+- Автоматический rollback при любых исключениях
+- Детальное логирование ошибок с трейсбеком
+"""
+
 from sqlalchemy import create_engine, select, or_
-from sqlalchemy.orm import sessionmaker, selectinload
+from sqlalchemy.orm import sessionmaker, selectinload, Session
 from models.models import Product as ProductORM, Category as CategoryORM, Tag as TagORM
 from config import settings
 from schemas.schemas import (
@@ -11,11 +52,59 @@ from schemas.schemas import (
     Category,
     TagCreate,
     Tag,
+    ProductUpdate,
 )
 import logging
+from functools import wraps
+from typing import TypeVar, Callable
 
 # Создаём именованный логгер для этого модуля
 logger = logging.getLogger(__name__)
+
+# Type variables для декоратора
+T = TypeVar("T")
+
+
+def with_transaction(func: Callable[..., T]) -> Callable[..., T]:
+    """
+    Декоратор для автоматической обработки транзакций SQLAlchemy.
+
+    Оборачивает функцию в транзакцию с автоматическим управлением:
+    - Создаёт сессию из session_local (первый аргумент функции)
+    - Автоматически выполняет commit() при успешном завершении
+    - Автоматически выполняет rollback() при любых исключениях
+    - Логирует ошибки с полным трейсбеком
+
+    Использование:
+    --------------
+    @with_transaction
+    def my_crud_function(session: Session, arg1, arg2):
+        # session уже создана декоратором
+        # работаем с БД
+        # commit произойдёт автоматически
+        return result
+
+    # Вызов (передаём session_local, декоратор создаст session):
+    my_crud_function(SessionLocal, value1, value2)
+
+    :param func: Функция для оборачивания
+    :return: Обёрнутая функция с управлением транзакциями
+    """
+
+    @wraps(func)
+    def wrapper(session_local: sessionmaker, *args, **kwargs) -> T:
+        with session_local() as session:
+            try:
+                # Вызываем функцию, передавая session вместо session_local
+                result = func(session, *args, **kwargs)
+                session.commit()
+                return result
+            except Exception as e:
+                session.rollback()
+                logger.error(f"❌ Ошибка в {func.__name__}: {e}", exc_info=True)
+                raise
+
+    return wrapper
 
 
 def get_engine(db_name=None):
@@ -51,131 +140,44 @@ def get_session_factory(engine):
     )
 
 
-def product_create(
-    session_local: sessionmaker,
-    product_data: ProductCreate,
-) -> Product:
+@with_transaction
+def product_delete_by_id(session: Session, product_id: int) -> int:
     """
-    Создает новый продукт используя Pydantic схему.
+    Удаляет продукт по ID с явной загрузкой связей.
 
-    :param session_local: Фабрика сессий SQLAlchemy.
-    :param product_data: Данные продукта (ProductCreate)
-    :return: ProductRead с данными созданного продукта
-    """
-    with session_local() as session:
-        try:
-            # Создаем ORM объект из Pydantic модели
-            new_product = ProductORM(**product_data.model_dump())
-            session.add(new_product)
-            session.commit()
-            session.refresh(new_product)
-
-            # Преобразуем ORM в Pydantic
-            result = Product.model_validate(new_product)
-
-            logger.info(f"✅ Создан новый продукт ID={result.id}: {result.name}")
-            return result
-
-        except Exception as e:
-            session.rollback()
-            logger.error(f"❌ Ошибка создания продукта: {e}", exc_info=True)
-            raise
-
-
-def product_delete_by_id(session_local: sessionmaker, product_id: int) -> int:
-    """
-    Удаляет продукт по ID.
-    :param session_local: Фабрика сессий SQLAlchemy.
+    :param session: Сессия SQLAlchemy (передаётся декоратором).
     :param product_id: ID продукта для удаления.
-    :return: int: Id удаленного продукта
+    :return: ID удалённого продукта или -1 при ошибке
+
+    Особенности:
+    - Загружает категорию и теги перед удалением (требуется из-за lazy="raise_on_sql")
+    - M2M связи с тегами удаляются автоматически благодаря CASCADE
+    - O2M связь с категорией обработана через ondelete="SET NULL"
     """
-    # Открываем сессию
-    with session_local() as session:
-        # Пытаемся найти продукт по ID
-        product = session.get(ProductORM, product_id)
-        if not product:
-            logger.warning(f"❌ Продукт с ID={product_id} не найден для удаления.")
-            return -1
+    # Загружаем продукт со всеми связями
+    stmt = (
+        select(ProductORM)
+        .where(ProductORM.id == product_id)
+        .options(selectinload(ProductORM.category), selectinload(ProductORM.tags))
+    )
 
-        session.delete(product)
-        session.commit()
-        logger.info(f"✅ Продукт с ID={product_id} успешно удален.")
-        return product_id
+    product = session.execute(stmt).scalar_one_or_none()
 
+    if not product:
+        logger.warning(f"❌ Продукт с ID={product_id} не найден для удаления.")
+        return -1
 
-def product_update(session_local: sessionmaker, product_data: Product) -> Product:
-    """
-    Обновляет продукт используя полную Pydantic модель Product.
+    # Явно очищаем M2M связь (опционально, CASCADE делает это автоматически)
+    product.tags.clear()
 
-    :param session_local: Фабрика сессий SQLAlchemy.
-    :param product_data: Полные данные продукта (Product) включая ID
-    :return: Product с обновленными данными
-    """
-    with session_local() as session:
-        product = session.get(ProductORM, product_data.id)
+    session.delete(product)
+    # Commit выполнится автоматически декоратором
 
-        if not product:
-            logger.warning(
-                f"❌ Продукт с ID={product_data.id} не найден для обновления."
-            )
-            raise ValueError(f"Продукт с ID={product_data.id} не найден")
-
-        try:
-            # Обновляем все поля из Pydantic модели
-            update_data = product_data.model_dump()
-
-            for key, value in update_data.items():
-                setattr(product, key, value)
-
-            session.commit()
-            session.refresh(product)
-
-            result = Product.model_validate(product)
-            logger.info(f"✅ Продукт с ID={product_data.id} успешно обновлен.")
-            return result
-
-        except Exception as e:
-            session.rollback()
-            logger.error(
-                f"❌ Ошибка обновления продукта ID={product_data.id}: {e}",
-                exc_info=True,
-            )
-            raise
-
-
-def product_get_by_id(session_local: sessionmaker, product_id: int) -> Product | None:
-    """
-    Получает продукт по ID, возвращает ProductRead.
-    :param session_local: Фабрика сессий SQLAlchemy.
-    :param product_id: ID продукта для получения.
-    :return: ProductRead или None, если продукт не найден.
-    """
-    with session_local() as session:
-        product = session.get(ProductORM, product_id)
-        if not product:
-            logger.warning(f"❌ Продукт с ID={product_id} не найден.")
-            return None
-
-        result = Product.model_validate(product)
-        logger.info(f"✅ Продукт с ID={product_id} успешно получен.")
-        return result
-
-
-def product_get_all(session_local: sessionmaker) -> list[Product]:
-    """
-    Получает все продукты, возвращает список ProductRead.
-    :param session_local: Фабрика сессий SQLAlchemy.
-    :return: Список всех ProductRead.
-    """
-    with session_local() as session:
-        # Создаем statement (инструкцию) для запроса всех продуктов
-        stmt = select(ProductORM)
-        # Выполняем запрос и получаем все объекты Product
-        products = session.scalars(stmt).all()
-
-        result = [Product.model_validate(p) for p in products]
-        logger.info(f"✅ Получено {len(result)} продуктов из базы данных.")
-        return result
+    logger.info(
+        f"✅ Продукт '{product.name}' (ID={product_id}) успешно удалён. "
+        f"Категория: {product.category.name if product.category else 'Нет'}"
+    )
+    return product_id
 
 
 def product_like_name(
@@ -205,42 +207,34 @@ def product_like_name(
 # ============================================
 
 
-def category_create(
-    session_local: sessionmaker, category_data: CategoryCreate
-) -> Category:
+@with_transaction
+def category_create(session: Session, category_data: CategoryCreate) -> Category:
     """
-    Создание новой категории
+    Создание новой категории.
 
-    :param session_local: Фабрика сессий SQLAlchemy.
+    :param session: Сессия SQLAlchemy (передаётся декоратором).
     :param category_data: Данные для создания категории
     :return: Category с id и name категории
     """
-    with session_local() as session:
-        try:
-            # Проверка на уникальность имени
-            existing = session.execute(
-                select(CategoryORM).where(CategoryORM.name == category_data.name)
-            ).scalar_one_or_none()
+    # Проверка на уникальность имени
+    existing = session.execute(
+        select(CategoryORM).where(CategoryORM.name == category_data.name)
+    ).scalar_one_or_none()
 
-            if existing:
-                logger.warning(f"⚠️ Категория '{category_data.name}' уже существует")
-                return Category.model_validate(existing)
+    if existing:
+        logger.warning(f"⚠️ Категория '{category_data.name}' уже существует")
+        return Category.model_validate(existing)
 
-            # Создаём новую категорию
-            new_category = CategoryORM(name=category_data.name)
+    # Создаём новую категорию
+    new_category = CategoryORM(name=category_data.name)
 
-            session.add(new_category)
-            session.commit()
-            session.refresh(new_category)
+    session.add(new_category)
+    session.flush()
+    session.refresh(new_category)
 
-            result = Category.model_validate(new_category)
-            logger.info(f"✅ Категория создана: ID={result.id}, Name={result.name}")
-            return result
-
-        except Exception as e:
-            session.rollback()
-            logger.error(f"❌ Ошибка создания категории: {e}", exc_info=True)
-            raise
+    result = Category.model_validate(new_category)
+    logger.info(f"✅ Категория создана: ID={result.id}, Name={result.name}")
+    return result
 
 
 def category_get_by_id(
@@ -269,45 +263,107 @@ def category_get_all(session_local: sessionmaker) -> list[Category]:
         return result
 
 
+@with_transaction
+def category_update(session: Session, category_id: int, name: str) -> Category:
+    """
+    Обновление категории по ID.
+
+    :param session: Сессия SQLAlchemy (передаётся декоратором).
+    :param category_id: ID категории для обновления.
+    :param name: Новое имя категории.
+    :return: Category с обновлёнными данными
+    :raises ValueError: Если категория не найдена
+    """
+    category = session.get(CategoryORM, category_id)
+
+    if not category:
+        error_msg = f"Категория с ID={category_id} не найдена"
+        logger.error(f"❌ {error_msg}")
+        raise ValueError(error_msg)
+
+    # Обновляем имя
+    category.name = name
+    # flush - фиксируем изменения в сессии
+    session.flush()
+
+    # refresh - обновляем объект из базы данных
+    session.refresh(category)
+
+    result = Category.model_validate(category)
+    logger.info(f"✅ Категория обновлена: ID={category_id}, Name={name}")
+    return result
+
+
+@with_transaction
+def category_delete(session: Session, category_id: int) -> int:
+    """
+    Удаление категории с проверкой зависимых продуктов.
+
+    :param session: Сессия SQLAlchemy (передаётся декоратором).
+    :param category_id: ID категории для удаления.
+    :return: ID удалённой категории или -1 при ошибке
+
+    ⚠️ ВАЖНО: При ondelete="SET NULL" продукты останутся, но потеряют категорию!
+    """
+    # Проверяем наличие связанных продуктов
+    stmt = select(ProductORM).where(ProductORM.category_id == category_id)
+    products = session.execute(stmt).scalars().all()
+    products_count = len(products)
+
+    if products_count > 0:
+        logger.warning(
+            f"⚠️ У категории {category_id} есть {products_count} продуктов. "
+            f"Они станут без категории (category_id = NULL)."
+        )
+
+    category = session.get(CategoryORM, category_id)
+    if not category:
+        logger.warning(f"❌ Категория с ID={category_id} не найдена")
+        return -1
+
+    session.delete(category)
+    # Commit выполнится автоматически декоратором
+
+    logger.info(
+        f"✅ Категория ID={category_id} удалена. "
+        f"Продуктов осталось без категории: {products_count}"
+    )
+    return category_id
+
+
 # ============================================
 # CRUD для Tag
 # ============================================
 
 
-def tag_create(session_local: sessionmaker, tag_data: TagCreate) -> Tag:
+@with_transaction
+def tag_create(session: Session, tag_data: TagCreate) -> Tag:
     """
-    Создание нового тега
+    Создание нового тега.
 
-    :param session_local: Фабрика сессий SQLAlchemy.
+    :param session: Сессия SQLAlchemy (передаётся декоратором).
     :param tag_data: Данные для создания тега
     :return: Tag с id и name тега
     """
-    with session_local() as session:
-        try:
-            # Проверка на уникальность имени
-            existing = session.execute(
-                select(TagORM).where(TagORM.name == tag_data.name)
-            ).scalar_one_or_none()
+    # Проверка на уникальность имени
+    existing = session.execute(
+        select(TagORM).where(TagORM.name == tag_data.name)
+    ).scalar_one_or_none()
 
-            if existing:
-                logger.warning(f"⚠️ Тег '{tag_data.name}' уже существует")
-                return Tag.model_validate(existing)
+    if existing:
+        logger.warning(f"⚠️ Тег '{tag_data.name}' уже существует")
+        return Tag.model_validate(existing)
 
-            # Создаём новый тег
-            new_tag = TagORM(name=tag_data.name)
+    # Создаём новый тег
+    new_tag = TagORM(name=tag_data.name)
 
-            session.add(new_tag)
-            session.commit()
-            session.refresh(new_tag)
+    session.add(new_tag)
+    session.flush()
+    session.refresh(new_tag)
 
-            result = Tag.model_validate(new_tag)
-            logger.info(f"✅ Тег создан: ID={result.id}, Name={result.name}")
-            return result
-
-        except Exception as e:
-            session.rollback()
-            logger.error(f"❌ Ошибка создания тега: {e}", exc_info=True)
-            raise
+    result = Tag.model_validate(new_tag)
+    logger.info(f"✅ Тег создан: ID={result.id}, Name={result.name}")
+    return result
 
 
 def tag_get_by_id(session_local: sessionmaker, tag_id: int) -> Tag | None:
@@ -334,107 +390,155 @@ def tag_get_all(session_local: sessionmaker) -> list[Tag]:
         return result
 
 
+@with_transaction
+def tag_update(session: Session, tag_id: int, name: str) -> Tag:
+    """
+    Обновление тега по ID.
+
+    :param session: Сессия SQLAlchemy (передаётся декоратором).
+    :param tag_id: ID тега для обновления.
+    :param name: Новое имя тега.
+    :return: Tag с обновлёнными данными
+    :raises ValueError: Если тег не найден
+    """
+    tag = session.get(TagORM, tag_id)
+
+    if not tag:
+        error_msg = f"Тег с ID={tag_id} не найден"
+        logger.error(f"❌ {error_msg}")
+        raise ValueError(error_msg)
+
+    # Обновляем имя
+    tag.name = name
+    session.flush()
+    session.refresh(tag)
+
+    result = Tag.model_validate(tag)
+    logger.info(f"✅ Тег обновлён: ID={tag_id}, Name={name}")
+    return result
+
+
+@with_transaction
+def tag_delete(session: Session, tag_id: int) -> int:
+    """
+    Удаление тега (M2M связь безопасна благодаря CASCADE).
+
+    :param session: Сессия SQLAlchemy (передаётся декоратором).
+    :param tag_id: ID тега для удаления.
+    :return: ID удалённого тега или -1 при ошибке
+
+    Особенности:
+    - M2M связи с продуктами удаляются автоматически благодаря CASCADE
+    - Продукты остаются в БД, удаляются только записи в ассоциативной таблице
+    """
+    # Загружаем тег со связями для подсчёта
+    stmt = (
+        select(TagORM).where(TagORM.id == tag_id).options(selectinload(TagORM.products))
+    )
+    tag = session.execute(stmt).scalar_one_or_none()
+
+    if not tag:
+        logger.warning(f"❌ Тег с ID={tag_id} не найден")
+        return -1
+
+    # Подсчёт связанных продуктов для логирования
+    products_count = len(tag.products)
+
+    session.delete(tag)
+    # Commit выполнится автоматически декоратором
+
+    logger.info(
+        f"✅ Тег ID={tag_id} удалён. Удалено связей с продуктами: {products_count}"
+    )
+    return tag_id
+
+
 # ============================================
-# Обновленные функции для Product с поддержкой связей
+# CRUD для Product
 # ============================================
 
 
-def product_create_with_relations(
-    session_local: sessionmaker,
+@with_transaction
+def product_create(
+    session: Session,
     product_data: ProductCreate,
-    strict_validation: bool = True,
 ) -> Product:
     """
-    Создание нового продукта со связями (категория и теги)
+    Создание нового продукта со связями (категория и теги).
 
-    :param session_local: Фабрика сессий SQLAlchemy.
+    :param session: Сессия SQLAlchemy (передаётся декоратором).
     :param product_data: Данные продукта (ProductCreate) с category_id и tag_ids
-    :param strict_validation: Если True, выбрасывает исключение при отсутствии категории/тегов
     :return: Product с данными созданного продукта
+
+    Особенности:
+    - Строгая валидация: отсутствие категории или тегов вызовет ValueError
+    - M2M связь с тегами устанавливается через список объектов
+    - O2M связь с категорией через объект (category_id устанавливается автоматически)
     """
-    with session_local() as session:
-        try:
-            # 1. Создаём базовый продукт через распаковку DTO
-            #    Исключаем служебные поля для связей
-            product_dict = product_data.model_dump(exclude={"category_id", "tag_ids"})
-            new_product = ProductORM(**product_dict)
+    # 1. Создаём базовый продукт через распаковку DTO
+    #    Исключаем служебные поля для связей
+    product_dict = product_data.model_dump(exclude={"category_id", "tag_ids"})
+    new_product = ProductORM(**product_dict)
 
-            # 2. Обрабатываем категорию (FK связь)
-            if product_data.category_id:
-                logger.info(f"Привязка категории ID: {product_data.category_id}")
+    # 2. Обрабатываем категорию (FK связь)
+    if product_data.category_id:
+        logger.info(f"Привязка категории ID: {product_data.category_id}")
 
-                category_orm = session.get(CategoryORM, product_data.category_id)
+        category_orm = session.get(CategoryORM, product_data.category_id)
 
-                if not category_orm:
-                    error_msg = f"Категория с ID {product_data.category_id} не найдена"
-                    logger.error(f"❌ {error_msg}")
-                    if strict_validation:
-                        raise ValueError(error_msg)
-                    else:
-                        logger.warning(f"⚠️ Продукт будет создан без категории")
-                else:
-                    # Привязываем через объект (SQLAlchemy автоматически установит category_id)
-                    new_product.category = category_orm
+        if not category_orm:
+            error_msg = f"Категория с ID {product_data.category_id} не найдена"
+            logger.error(f"❌ {error_msg}")
+            raise ValueError(error_msg)
 
-            # 3. Обрабатываем теги (M2M связь)
-            if product_data.tag_ids:
-                logger.info(f"Привязка тегов: {product_data.tag_ids}")
+        # Привязываем через объект (SQLAlchemy автоматически установит category_id)
+        new_product.category = category_orm
 
-                # Загружаем все теги одним запросом
-                tags_stmt = select(TagORM).where(TagORM.id.in_(product_data.tag_ids))
-                tags_orm = session.execute(tags_stmt).scalars().all()
+    # 3. Обрабатываем теги (M2M связь)
+    if product_data.tag_ids:
+        logger.info(f"Привязка тегов: {product_data.tag_ids}")
 
-                # Проверяем, что все теги найдены
-                found_ids = {tag.id for tag in tags_orm}
-                missing_ids = set(product_data.tag_ids) - found_ids
+        # Загружаем все теги одним запросом
+        tags_stmt = select(TagORM).where(TagORM.id.in_(product_data.tag_ids))
+        tags_orm = session.execute(tags_stmt).scalars().all()
 
-                if missing_ids:
-                    error_msg = f"Теги с ID {missing_ids} не найдены"
-                    logger.error(f"❌ {error_msg}")
-                    if strict_validation:
-                        raise ValueError(error_msg)
-                    else:
-                        logger.warning(
-                            f"⚠️ Будут привязаны только найденные теги: {found_ids}"
-                        )
+        # Проверяем, что все теги найдены
+        found_ids = {tag.id for tag in tags_orm}
+        missing_ids = set(product_data.tag_ids) - found_ids
 
-                # Устанавливаем связь M2M
-                new_product.tags = list(tags_orm)
+        if missing_ids:
+            error_msg = f"Теги с ID {missing_ids} не найдены"
+            logger.error(f"❌ {error_msg}")
+            raise ValueError(error_msg)
 
-            # 4. Сохраняем продукт
-            session.add(new_product)
-            session.commit()
+        # Устанавливаем связь M2M
+        new_product.tags = list(tags_orm)
 
-            # 5. Перезагружаем с полными связями для возврата
-            stmt = (
-                select(ProductORM)
-                .where(ProductORM.id == new_product.id)
-                .options(
-                    selectinload(ProductORM.category), selectinload(ProductORM.tags)
-                )
-            )
-            refreshed_product = session.execute(stmt).scalar_one()
+    # 4. Сохраняем продукт
+    session.add(new_product)
+    session.flush()  # Применяем изменения для получения ID
 
-            result = Product.model_validate(refreshed_product)
+    # 5. Перезагружаем с полными связями для возврата
+    stmt = (
+        select(ProductORM)
+        .where(ProductORM.id == new_product.id)
+        .options(selectinload(ProductORM.category), selectinload(ProductORM.tags))
+    )
+    refreshed_product = session.execute(stmt).scalar_one()
 
-            logger.info(
-                f"✅ Продукт создан: ID={result.id}, "
-                f"Category={result.category.name if result.category else 'Нет'}, "
-                f"Tags={[tag.name for tag in result.tags]}"
-            )
-            return result
+    result = Product.model_validate(refreshed_product)
 
-        except Exception as e:
-            session.rollback()
-            logger.error(f"❌ Ошибка создания продукта: {e}", exc_info=True)
-            raise
+    logger.info(
+        f"✅ Продукт создан: ID={result.id}, "
+        f"Category={result.category.name if result.category else 'Нет'}, "
+        f"Tags={[tag.name for tag in result.tags]}"
+    )
+    return result
 
 
-def product_get_by_id_with_relations(
-    session_local: sessionmaker, product_id: int
-) -> Product | None:
+def product_get_by_id(session_local: sessionmaker, product_id: int) -> Product | None:
     """
-    Получает продукт по ID с загрузкой категории и тегов
+    Получает продукт по ID с загрузкой категории и тегов.
 
     :param session_local: Фабрика сессий SQLAlchemy.
     :param product_id: ID продукта для получения.
@@ -458,11 +562,11 @@ def product_get_by_id_with_relations(
         return result
 
 
-def product_get_all_with_relations(
+def product_get_all(
     session_local: sessionmaker, skip: int = 0, limit: int = 100
 ) -> list[Product]:
     """
-    Получить все продукты с категориями и тегами
+    Получить все продукты с категориями и тегами.
 
     :param session_local: Фабрика сессий SQLAlchemy.
     :param skip: Количество записей для пропуска
@@ -484,12 +588,16 @@ def product_get_all_with_relations(
         return result
 
 
-def product_search_advanced(session_local: sessionmaker, search: str) -> list[Product]:
+def product_search_advanced(
+    session_local: sessionmaker, search: str, skip: int = 0, limit: int = 100
+) -> list[Product]:
     """
-    Расширенный поиск продуктов по названию, категории или тегам
+    Расширенный поиск продуктов по названию, категории или тегам.
 
     :param session_local: Фабрика сессий SQLAlchemy.
     :param search: Поисковый запрос
+    :param skip: Количество записей для пропуска (пагинация)
+    :param limit: Максимальное количество записей (пагинация)
     :return: Список найденных продуктов со связями
     """
     with session_local() as session:
@@ -510,6 +618,8 @@ def product_search_advanced(session_local: sessionmaker, search: str) -> list[Pr
             )
             .options(selectinload(ProductORM.category), selectinload(ProductORM.tags))
             .distinct()
+            .offset(skip)
+            .limit(limit)
         )
 
         products = session.execute(stmt).scalars().unique().all()
@@ -517,3 +627,80 @@ def product_search_advanced(session_local: sessionmaker, search: str) -> list[Pr
         result = [Product.model_validate(p) for p in products]
         logger.info(f"✅ Найдено продуктов: {len(result)}")
         return result
+
+
+@with_transaction
+def product_update(session: Session, product_data: ProductUpdate) -> Product:
+    """
+    Обновление существующего продукта со связями (категория и теги).
+
+    :param session: Сессия SQLAlchemy (передаётся декоратором).
+    :param product_data: Данные продукта (ProductUpdate) с category_id и tag_ids
+    :return: Product с данными обновлённого продукта
+    """
+    # 1. Получаем существующий продукт
+    existing_product = session.get(ProductORM, product_data.id)
+    if not existing_product:
+        error_msg = f"Продукт с ID {product_data.id} не найден для обновления"
+        logger.error(f"❌ {error_msg}")
+        raise ValueError(error_msg)
+
+    # 2. Обновляем поля продукта через распаковку DTO
+    product_dict = product_data.model_dump(exclude={"category_id", "tag_ids"})
+    for key, value in product_dict.items():
+        setattr(existing_product, key, value)
+
+    # 3. Обрабатываем категорию (FK связь)
+    if product_data.category_id is not None:
+        logger.info(f"Обновление категории ID: {product_data.category_id}")
+
+        # Получаем категорию по ID
+        category_orm = session.get(CategoryORM, product_data.category_id)
+
+        # Если её нет, выбрасываем ошибку
+        if not category_orm:
+            error_msg = f"Категория с ID {product_data.category_id} не найдена"
+            logger.error(f"❌ {error_msg}")
+            raise ValueError(error_msg)
+
+        # Привязываем через объект (SQLAlchemy автоматически установит category_id)
+        existing_product.category = category_orm
+    else:
+        # Если category_id None, отвязываем категорию
+        existing_product.category = None
+
+    # 4. Обрабатываем теги (M2M связь)
+    if product_data.tag_ids is not None:
+        logger.info(f"Обновление тегов: {product_data.tag_ids}")
+
+        # Загружаем все теги одним запросом
+        tags_stmt = select(TagORM).where(TagORM.id.in_(product_data.tag_ids))
+        tags_orm = session.execute(tags_stmt).scalars().all()
+
+        # Проверяем, что все теги найдены
+        found_ids = {tag.id for tag in tags_orm}
+        missing_ids = set(product_data.tag_ids) - found_ids
+
+        if missing_ids:
+            error_msg = f"Теги с ID {missing_ids} не найдены"
+            logger.error(f"❌ {error_msg}")
+            raise ValueError(error_msg)
+
+        # Устанавливаем связь M2M
+        existing_product.tags = list(tags_orm)
+    else:
+        # Если tag_ids None, очищаем теги
+        existing_product.tags = []
+
+    # 5. Сохраняем изменения продукта
+    session.flush()
+    session.refresh(existing_product)
+
+    # 6. Возвращаем с полными связями
+    result = Product.model_validate(existing_product)
+    logger.info(
+        f"✅ Продукт обновлён: ID={result.id}, "
+        f"Category={result.category.name if result.category else 'Нет'}, "
+        f"Tags={[tag.name for tag in result.tags]}"
+    )
+    return result
